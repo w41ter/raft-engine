@@ -8,6 +8,9 @@ use std::thread::{Builder as ThreadBuilder, JoinHandle};
 use std::time::{Duration, Instant};
 
 use log::{error, info};
+#[cfg(feature = "prost")]
+use prost::Message;
+#[cfg(not(feature = "prost"))]
 use protobuf::{parse_from_bytes, Message};
 
 use crate::config::{Config, RecoveryMode};
@@ -235,11 +238,18 @@ where
         Ok(())
     }
 
-    pub fn get_message<S: Message>(&self, region_id: u64, key: &[u8]) -> Result<Option<S>> {
+    pub fn get_message<S: Message + Default>(
+        &self,
+        region_id: u64,
+        key: &[u8],
+    ) -> Result<Option<S>> {
         let _t = StopWatch::new(&*ENGINE_READ_MESSAGE_DURATION_HISTOGRAM);
         if let Some(memtable) = self.memtables.get(region_id) {
             if let Some(value) = memtable.read().get(key) {
+                #[cfg(not(feature = "prost"))]
                 return Ok(Some(parse_from_bytes(&value)?));
+                #[cfg(feature = "prost")]
+                return Ok(Some(Message::decode(&*value)?));
             }
         }
         Ok(None)
@@ -264,11 +274,19 @@ where
         mut callback: C,
     ) -> Result<()>
     where
-        S: Message,
+        S: Message + Default,
         C: FnMut(&[u8], S) -> bool,
     {
         self.scan_raw_messages(region_id, start_key, end_key, reverse, move |k, raw_v| {
+            #[cfg(not(feature = "prost"))]
             if let Ok(v) = parse_from_bytes(raw_v) {
+                callback(k, v)
+            } else {
+                true
+            }
+
+            #[cfg(feature = "prost")]
+            if let Ok(v) = Message::decode(&*raw_v) {
                 callback(k, v)
             } else {
                 true
@@ -594,6 +612,12 @@ where
                 )?,
             );
         }
+        #[cfg(feature = "prost")]
+        let e = Message::decode(
+            &cache.block.borrow()
+                [idx.entry_offset as usize..(idx.entry_offset + idx.entry_len) as usize],
+        )?;
+        #[cfg(not(feature = "prost"))]
         let e = parse_from_bytes(
             &cache.block.borrow()
                 [idx.entry_offset as usize..(idx.entry_offset + idx.entry_len) as usize],
@@ -625,6 +649,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "prost"))]
 pub(crate) mod tests {
     use super::*;
     use crate::env::{ObfuscatedFileSystem, Permission};
@@ -1371,6 +1396,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "prost"))]
     fn test_empty_protobuf_message() {
         let dir = tempfile::Builder::new()
             .prefix("test_empty_protobuf_message")

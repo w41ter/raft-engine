@@ -10,6 +10,9 @@ use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 use log::error;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+#[cfg(feature = "prost")]
+use prost::Message;
+#[cfg(not(feature = "prost"))]
 use protobuf::Message;
 
 use crate::codec::{self, NumberEncoder};
@@ -37,7 +40,7 @@ const MAX_LOG_ENTRIES_SIZE_PER_BATCH: usize = i32::MAX as usize;
 /// `MessageExt` trait allows for probing log index from a specific type of
 /// protobuf messages.
 pub trait MessageExt: Send + Sync {
-    type Entry: Message + Clone + PartialEq;
+    type Entry: Message + Default + Clone + PartialEq;
 
     fn index(e: &Self::Entry) -> u64;
 }
@@ -477,6 +480,9 @@ impl LogItemBatch {
     }
 
     pub fn put_message<S: Message>(&mut self, region_id: u64, key: Vec<u8>, s: &S) -> Result<()> {
+        #[cfg(feature = "prost")]
+        self.put(region_id, key, s.encode_to_vec());
+        #[cfg(not(feature = "prost"))]
         self.put(region_id, key, s.write_to_bytes()?);
         Ok(())
     }
@@ -663,6 +669,10 @@ impl LogBatch {
         })();
         for e in entries {
             let buf_offset = self.buf.len();
+
+            #[cfg(feature = "prost")]
+            e.encode(&mut self.buf)?;
+            #[cfg(not(feature = "prost"))]
             e.write_to_vec(&mut self.buf)?;
             if self.buf.len() > max_entries_size + LOG_BATCH_HEADER_LEN {
                 self.buf.truncate(old_buf_len);
@@ -1116,7 +1126,6 @@ mod tests {
     use super::*;
     use crate::pipe_log::{LogQueue, Version};
     use crate::test_util::{catch_unwind_silent, generate_entries, generate_entry_indexes_opt};
-    use protobuf::parse_from_bytes;
     use raft::eraftpb::Entry;
     use strum::IntoEnumIterator;
 
@@ -1131,7 +1140,13 @@ mod tests {
                 LogBatch::decode_entries_block(buf, ei.entries.unwrap(), ei.compression_type)
                     .unwrap();
             entries.push(
-                parse_from_bytes(
+                #[cfg(feature = "prost")]
+                prost::Message::decode(
+                    &block[ei.entry_offset as usize..(ei.entry_offset + ei.entry_len) as usize],
+                )
+                .unwrap(),
+                #[cfg(not(feature = "prost"))]
+                protobuf::parse_from_bytes(
                     &block[ei.entry_offset as usize..(ei.entry_offset + ei.entry_len) as usize],
                 )
                 .unwrap(),

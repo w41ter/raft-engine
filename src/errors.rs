@@ -7,6 +7,20 @@ use thiserror::Error;
 
 use crate::codec::Error as CodecError;
 
+#[cfg(feature = "prost")]
+#[derive(Debug, Error)]
+pub enum ProstError {
+    #[error("Encode Error: {0}")]
+    Encode(#[from] prost::EncodeError),
+    #[error("Decode Error: {0}")]
+    Decode(#[from] prost::DecodeError),
+}
+
+#[cfg(not(feature = "prost"))]
+type ProtobufError = protobuf::ProtobufError;
+#[cfg(feature = "prost")]
+type ProtobufError = ProstError;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Invalid Argument: {0}")]
@@ -18,7 +32,7 @@ pub enum Error {
     #[error("Codec Error: {0}")]
     Codec(#[from] CodecError),
     #[error("Protobuf Error: {0}")]
-    Protobuf(#[from] protobuf::ProtobufError),
+    Protobuf(#[from] ProtobufError),
     #[error("TryAgain Error: {0}")]
     TryAgain(String),
     #[error("Entry Compacted")]
@@ -39,3 +53,18 @@ pub(crate) fn is_no_space_err(e: &IoError) -> bool {
     // `ErrorKind::StorageFull` is stable.
     format!("{e}").contains("nospace")
 }
+
+#[cfg(feature = "prost")]
+impl From<prost::EncodeError> for Error {
+    fn from(error: prost::EncodeError) -> Self {
+        ProstError::Encode(error).into()
+    }
+}
+
+#[cfg(feature = "prost")]
+impl From<prost::DecodeError> for Error {
+    fn from(error: prost::DecodeError) -> Self {
+        ProstError::Decode(error).into()
+    }
+}
+

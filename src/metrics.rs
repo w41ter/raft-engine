@@ -302,4 +302,9 @@ lazy_static! {
         "Memory in bytes used by Raft engine",
     )
     .unwrap();
+    pub static ref LOG_WRITE_BYTES_TOTAL: IntCounter = register_int_counter!(
+        "raft_engine_log_write_bytes_total",
+        "The log entries write to Raft engin in bytes",
+    )
+    .unwrap();
 }

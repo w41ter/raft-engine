@@ -1,19 +1,18 @@
 // Copyright (c) 2017-present, PingCAP, Inc. Licensed under Apache-2.0.
 
-use crate::env::{Handle, Permission};
-
-use fail::fail_point;
-use log::error;
-
 use std::io::Result as IoResult;
 use std::os::unix::io::RawFd;
 
+use fail::fail_point;
+use log::error;
 use nix::errno::Errno;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
 use nix::sys::uio::{pread, pwrite};
 use nix::unistd::{close, ftruncate, lseek, Whence};
 use nix::NixPath;
+
+use crate::env::{Handle, Permission};
 
 fn from_nix_error(e: nix::Error, custom: &'static str) -> std::io::Error {
     let kind = std::io::Error::from(e).kind();
@@ -53,9 +52,7 @@ impl LogFd {
             }
             Ok(fd)
         });
-        Ok(LogFd(
-            fcntl::open(path, perm.into(), mode).map_err(|e| from_nix_error(e, "open"))?,
-        ))
+        Ok(LogFd(fcntl::open(path, perm.into(), mode).map_err(|e| from_nix_error(e, "open"))?))
     }
 
     /// Opens a file with the given `path`. The specified file will be created
@@ -70,9 +67,7 @@ impl LogFd {
 
     /// Closes the file.
     pub fn close(&self) -> IoResult<()> {
-        fail_point!("log_fd::close::err", |_| {
-            Err(from_nix_error(nix::Error::EINVAL, "fp"))
-        });
+        fail_point!("log_fd::close::err", |_| { Err(from_nix_error(nix::Error::EINVAL, "fp")) });
         close(self.0).map_err(|e| from_nix_error(e, "close"))
     }
 
@@ -129,12 +124,9 @@ impl LogFd {
     pub fn allocate(&self, offset: usize, size: usize) -> IoResult<()> {
         #[cfg(target_os = "linux")]
         {
-            if let Err(e) = fcntl::fallocate(
-                self.0,
-                fcntl::FallocateFlags::empty(),
-                offset as i64,
-                size as i64,
-            ) {
+            if let Err(e) =
+                fcntl::fallocate(self.0, fcntl::FallocateFlags::empty(), offset as i64, size as i64)
+            {
                 if e != nix::Error::EOPNOTSUPP {
                     return Err(from_nix_error(e, "fallocate"));
                 }
@@ -162,9 +154,7 @@ impl Handle for LogFd {
 
     #[inline]
     fn sync(&self) -> IoResult<()> {
-        fail_point!("log_fd::sync::err", |_| {
-            Err(from_nix_error(nix::Error::EINVAL, "fp"))
-        });
+        fail_point!("log_fd::sync::err", |_| { Err(from_nix_error(nix::Error::EINVAL, "fp")) });
         #[cfg(target_os = "linux")]
         {
             nix::unistd::fdatasync(self.0).map_err(|e| from_nix_error(e, "fdatasync"))
@@ -174,6 +164,11 @@ impl Handle for LogFd {
             nix::unistd::fsync(self.0).map_err(|e| from_nix_error(e, "fsync"))
         }
     }
+
+    #[inline]
+    fn sync_range(&self, offset: usize, nbytes: usize) -> IoResult<()> {
+        sync_file_range(self.0, offset, nbytes, false)
+    }
 }
 
 impl Drop for LogFd {
@@ -182,4 +177,26 @@ impl Drop for LogFd {
             error!("error while closing file: {e}");
         }
     }
+}
+
+#[inline]
+pub(crate) fn sync_file_range(fd: RawFd, offset: usize, nbytes: usize, wait: bool) -> IoResult<()> {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        use libc::{sync_file_range, SYNC_FILE_RANGE_WAIT_AFTER, SYNC_FILE_RANGE_WRITE};
+
+        let flags = if wait {
+            SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER
+        } else {
+            SYNC_FILE_RANGE_WRITE
+        };
+        if sync_file_range(fd, offset as i64, nbytes as i64, flags) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (offset, nbytes);
+    }
+    Ok(())
 }

@@ -114,6 +114,7 @@ impl<F: FileSystem> LogFileWriter<F> {
             }
             self.capacity += alloc;
         }
+        LOG_WRITE_BYTES_TOTAL.inc_by(buf.len() as u64);
         self.writer.write_all(buf).map_err(|e| {
             self.writer
                 .seek(SeekFrom::Start(self.written as u64))

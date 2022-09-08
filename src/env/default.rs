@@ -177,12 +177,18 @@ impl Handle for LogFd {
         });
         #[cfg(target_os = "linux")]
         {
+            sync_file_range(self.0, 0, 0, true)?;
             nix::unistd::fdatasync(self.0).map_err(|e| from_nix_error(e, "fdatasync"))
         }
         #[cfg(not(target_os = "linux"))]
         {
             nix::unistd::fsync(self.0).map_err(|e| from_nix_error(e, "fsync"))
         }
+    }
+
+    #[inline]
+    fn sync_range(&self, offset: usize, nbytes: usize) -> IoResult<()> {
+        sync_file_range(self.0, offset, nbytes, false)
     }
 }
 
@@ -287,4 +293,26 @@ impl FileSystem for DefaultFileSystem {
     fn new_writer(&self, handle: Arc<Self::Handle>) -> IoResult<Self::Writer> {
         Ok(LogFile::new(handle))
     }
+}
+
+#[inline]
+fn sync_file_range(fd: RawFd, offset: usize, nbytes: usize, wait: bool) -> IoResult<()> {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        use libc::{sync_file_range, SYNC_FILE_RANGE_WAIT_AFTER, SYNC_FILE_RANGE_WRITE};
+
+        let flags = if wait {
+            SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER
+        } else {
+            SYNC_FILE_RANGE_WRITE
+        };
+        if sync_file_range(fd, offset as i64, nbytes as i64, flags) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (offset, nbytes);
+    }
+    Ok(())
 }

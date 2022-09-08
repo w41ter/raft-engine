@@ -58,6 +58,9 @@ pub trait Handle {
     fn file_size(&self) -> Result<usize>;
 
     fn sync(&self) -> Result<()>;
+
+    /// Sync the specified range in asynchronous.
+    fn sync_range(&self, offset: usize, nbytes: usize) -> Result<()>;
 }
 
 /// WriteExt is writer extension api

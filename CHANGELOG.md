@@ -21,6 +21,7 @@
 * Add `Engine::get` for getting raw value.
 * Move `sync` from `env::WriteExt` to `env::Handle`.
 * Deprecate `bytes_per_sync`.
+* Add `env::Handle::sync_range` for sync in asynchornous.
 
 ### Behavior Changes
 

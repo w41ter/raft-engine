@@ -11,12 +11,16 @@ use log::warn;
 use crate::env::{FileSystem, Handle, WriteExt};
 use crate::metrics::*;
 use crate::pipe_log::FileBlockHandle;
+use crate::util::round_down;
 use crate::{Error, Result};
 
 use super::format::LogFileFormat;
 
 /// Maximum number of bytes to allocate ahead.
 const FILE_ALLOCATE_SIZE: usize = 2 * 1024 * 1024;
+
+const PAGE_SIZE: usize = 4096;
+const SYNC_RANGE_SIZE: usize = 16 * PAGE_SIZE;
 
 /// Builds a file writer.
 ///
@@ -39,6 +43,7 @@ pub(super) fn build_file_writer<F: FileSystem>(
 pub struct LogFileWriter<F: FileSystem> {
     handle: Arc<F::Handle>,
     writer: F::Writer,
+    synced: usize,
     written: usize,
     capacity: usize,
 }
@@ -54,6 +59,7 @@ impl<F: FileSystem> LogFileWriter<F> {
         let mut f = Self {
             handle,
             writer,
+            synced: round_down(file_size, PAGE_SIZE),
             written: file_size,
             capacity: file_size,
         };
@@ -69,6 +75,7 @@ impl<F: FileSystem> LogFileWriter<F> {
     fn write_header(&mut self, format: LogFileFormat) -> Result<()> {
         self.writer.seek(SeekFrom::Start(0))?;
         self.written = 0;
+        self.synced = 0;
         let mut buf = Vec::with_capacity(LogFileFormat::encode_len(format.version));
         format.encode(&mut buf)?;
         self.write(&buf, 0)
@@ -116,6 +123,12 @@ impl<F: FileSystem> LogFileWriter<F> {
             e
         })?;
         self.written = new_written;
+        if self.written >= self.synced + SYNC_RANGE_SIZE {
+            debug_assert_eq!(self.synced % PAGE_SIZE, 0);
+            let nbytes = round_down(self.written - self.synced, PAGE_SIZE);
+            self.handle.sync_range(self.synced, nbytes)?;
+            self.synced += nbytes;
+        }
         Ok(())
     }
 

@@ -17,7 +17,7 @@ use crate::PerfContext;
 
 type Ptr<T> = Option<NonNull<T>>;
 
-///
+/// The writer
 pub struct Writer<P, O> {
     next: Cell<Ptr<Writer<P, O>>>,
     payload: *mut P,

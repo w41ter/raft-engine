@@ -135,6 +135,7 @@ where
 
     /// Rewrite append files with seqno no larger than `watermark`. When it's
     /// None, rewrite the entire queue. Returns the number of purged files.
+    #[allow(dead_code)]
     pub fn must_rewrite_append_queue(
         &self,
         watermark: Option<FileSeq>,
@@ -162,6 +163,7 @@ where
         .unwrap();
     }
 
+    #[allow(dead_code)]
     pub fn must_rewrite_rewrite_queue(&self) {
         let _lk = self.force_rewrite_candidates.try_lock().unwrap();
         self.rewrite_rewrite_queue().unwrap();
@@ -172,6 +174,7 @@ where
         .unwrap();
     }
 
+    #[allow(dead_code)]
     pub fn must_purge_all_stale(&self) {
         let _lk = self.force_rewrite_candidates.try_lock().unwrap();
         self.pipe_log.rotate(LogQueue::Rewrite).unwrap();

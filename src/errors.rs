@@ -67,4 +67,3 @@ impl From<prost::DecodeError> for Error {
         ProstError::Decode(error).into()
     }
 }
-

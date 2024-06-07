@@ -52,7 +52,9 @@ impl LogFd {
             }
             Ok(fd)
         });
-        Ok(LogFd(fcntl::open(path, perm.into(), mode).map_err(|e| from_nix_error(e, "open"))?))
+        Ok(LogFd(
+            fcntl::open(path, perm.into(), mode).map_err(|e| from_nix_error(e, "open"))?,
+        ))
     }
 
     /// Opens a file with the given `path`. The specified file will be created
@@ -67,7 +69,9 @@ impl LogFd {
 
     /// Closes the file.
     pub fn close(&self) -> IoResult<()> {
-        fail_point!("log_fd::close::err", |_| { Err(from_nix_error(nix::Error::EINVAL, "fp")) });
+        fail_point!("log_fd::close::err", |_| {
+            Err(from_nix_error(nix::Error::EINVAL, "fp"))
+        });
         close(self.0).map_err(|e| from_nix_error(e, "close"))
     }
 
@@ -124,9 +128,12 @@ impl LogFd {
     pub fn allocate(&self, offset: usize, size: usize) -> IoResult<()> {
         #[cfg(target_os = "linux")]
         {
-            if let Err(e) =
-                fcntl::fallocate(self.0, fcntl::FallocateFlags::empty(), offset as i64, size as i64)
-            {
+            if let Err(e) = fcntl::fallocate(
+                self.0,
+                fcntl::FallocateFlags::empty(),
+                offset as i64,
+                size as i64,
+            ) {
                 if e != nix::Error::EOPNOTSUPP {
                     return Err(from_nix_error(e, "fallocate"));
                 }
@@ -154,7 +161,9 @@ impl Handle for LogFd {
 
     #[inline]
     fn sync(&self) -> IoResult<()> {
-        fail_point!("log_fd::sync::err", |_| { Err(from_nix_error(nix::Error::EINVAL, "fp")) });
+        fail_point!("log_fd::sync::err", |_| {
+            Err(from_nix_error(nix::Error::EINVAL, "fp"))
+        });
         #[cfg(target_os = "linux")]
         {
             nix::unistd::fdatasync(self.0).map_err(|e| from_nix_error(e, "fdatasync"))

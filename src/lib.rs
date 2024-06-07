@@ -13,6 +13,7 @@
 
 //! # Raft Engine
 
+#![allow(clippy::redundant_closure_call)]
 #![cfg_attr(feature = "nightly", feature(test))]
 #![cfg_attr(feature = "swap", feature(allocator_api))]
 #![cfg_attr(feature = "swap", feature(slice_ptr_get))]
@@ -75,8 +76,8 @@ pub use util::ReadableSize;
 
 #[cfg(feature = "internals")]
 pub mod internals {
-    //! A selective view of key components in Raft Engine. Exported under the
-    //! `internals` feature only.
+    /// A selective view of key components in Raft Engine. Exported under the
+    /// `internals` feature only.
     pub use crate::event_listener::*;
     pub use crate::file_pipe_log::*;
     pub use crate::memtable::*;

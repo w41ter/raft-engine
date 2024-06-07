@@ -299,7 +299,7 @@ where
             }
 
             #[cfg(feature = "prost")]
-            if let Ok(v) = Message::decode(&*raw_v) {
+            if let Ok(v) = Message::decode(raw_v) {
                 callback(k, v)
             } else {
                 true

@@ -38,7 +38,6 @@ impl FileId {
     }
 
     /// Creates a new [`FileId`] representing a non-existing file.
-    #[cfg(test)]
     pub fn dummy(queue: LogQueue) -> Self {
         Self { queue, seq: 0 }
     }
@@ -71,7 +70,6 @@ pub struct FileBlockHandle {
 
 impl FileBlockHandle {
     /// Creates a new [`FileBlockHandle`] that points to nothing.
-    #[cfg(test)]
     pub fn dummy(queue: LogQueue) -> Self {
         Self {
             id: FileId::dummy(queue),

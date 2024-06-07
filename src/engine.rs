@@ -22,7 +22,7 @@ use crate::file_pipe_log::{DefaultMachineFactory, FilePipeLog, FilePipeLogBuilde
 use crate::log_batch::{Command, LogBatch, MessageExt};
 use crate::memtable::{EntryIndex, MemTableRecoverContextFactory, MemTables};
 use crate::metrics::*;
-use crate::pipe_log::{FileBlockHandle, FileId, LogQueue, PipeLog};
+use crate::pipe_log::{FileBlockHandle, LogQueue, PipeLog};
 use crate::purge::{PurgeHook, PurgeManager};
 use crate::write_barrier::{WriteBarrier, Writer};
 use crate::{perf_context, Error, GlobalStats, Result};
@@ -39,6 +39,7 @@ where
     cfg: Arc<Config>,
     listeners: Vec<Arc<dyn EventListener>>,
 
+    instance_id: u64,
     #[allow(dead_code)]
     stats: Arc<GlobalStats>,
     memtables: MemTables,
@@ -82,8 +83,14 @@ where
         file_system: Arc<F>,
         mut listeners: Vec<Arc<dyn EventListener>>,
     ) -> Result<Engine<F, FilePipeLog<F>>> {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+
         cfg.sanitize()?;
         listeners.push(Arc::new(PurgeHook::default()) as Arc<dyn EventListener>);
+
+        let mut hasher = DefaultHasher::new();
+        cfg.dir.hash(&mut hasher);
+        let instance_id = hasher.finish();
 
         let start = Instant::now();
         let mut builder = FilePipeLogBuilder::new(cfg.clone(), file_system, listeners.clone());
@@ -93,11 +100,16 @@ where
         let pipe_log = Arc::new(builder.finish()?);
         rewrite.merge_append_context(append);
         let (memtables, stats) = rewrite.finish();
-        info!("Recovering raft logs takes {:?}", start.elapsed());
+        info!(
+            "Recovering raft logs for instance {} takes {:?}",
+            instance_id,
+            start.elapsed()
+        );
 
         let cfg = Arc::new(cfg);
         let purge_manager = PurgeManager::new(
             cfg.clone(),
+            instance_id,
             memtables.clone(),
             pipe_log.clone(),
             stats.clone(),
@@ -120,6 +132,7 @@ where
         Ok(Self {
             cfg,
             listeners,
+            instance_id,
             stats,
             memtables,
             pipe_log,
@@ -326,6 +339,7 @@ where
             if let Some(idx) = memtable.read().get_entry(log_idx) {
                 ENGINE_READ_ENTRY_COUNT_HISTOGRAM.observe(1.0);
                 return Ok(Some(read_entry_from_file::<M, _>(
+                    self.instance_id,
                     self.pipe_log.as_ref(),
                     &idx,
                 )?));
@@ -356,7 +370,11 @@ where
                 .read()
                 .fetch_entries_to(begin, end, max_size, &mut ents_idx)?;
             for i in ents_idx.iter() {
-                vec.push(read_entry_from_file::<M, _>(self.pipe_log.as_ref(), i)?);
+                vec.push(read_entry_from_file::<M, _>(
+                    self.instance_id,
+                    self.pipe_log.as_ref(),
+                    i,
+                )?);
             }
             ENGINE_READ_ENTRY_COUNT_HISTOGRAM.observe(ents_idx.len() as f64);
             return Ok(ents_idx.len());
@@ -570,24 +588,20 @@ where
 }
 
 struct BlockCache {
-    key: Cell<FileBlockHandle>,
+    key: Cell<(u64, FileBlockHandle)>,
     block: RefCell<Vec<u8>>,
 }
 
 impl BlockCache {
     fn new() -> Self {
         BlockCache {
-            key: Cell::new(FileBlockHandle {
-                id: FileId::new(LogQueue::Append, 0),
-                offset: 0,
-                len: 0,
-            }),
+            key: Cell::new((0, FileBlockHandle::dummy(LogQueue::Append))),
             block: RefCell::new(Vec::new()),
         }
     }
 
-    fn insert(&self, key: FileBlockHandle, block: Vec<u8>) {
-        self.key.set(key);
+    fn insert(&self, instance_id: u64, key: FileBlockHandle, block: Vec<u8>) {
+        self.key.set((instance_id, key));
         self.block.replace(block);
     }
 }
@@ -596,18 +610,24 @@ thread_local! {
     static BLOCK_CACHE: BlockCache = BlockCache::new();
 }
 
-pub(crate) fn read_entry_from_file<M, P>(pipe_log: &P, idx: &EntryIndex) -> Result<M::Entry>
+pub(crate) fn read_entry_from_file<M, P>(
+    instance_id: u64,
+    pipe_log: &P,
+    idx: &EntryIndex,
+) -> Result<M::Entry>
 where
     M: MessageExt,
     P: PipeLog,
 {
     BLOCK_CACHE.with(|cache| {
-        if cache.key.get() != idx.entries.unwrap() {
+        let entries = idx.entries.unwrap();
+        if cache.key.get() != (instance_id, entries) {
             cache.insert(
-                idx.entries.unwrap(),
+                instance_id,
+                entries,
                 LogBatch::decode_entries_block(
-                    &pipe_log.read_bytes(idx.entries.unwrap())?,
-                    idx.entries.unwrap(),
+                    &pipe_log.read_bytes(entries)?,
+                    entries,
                     idx.compression_type,
                 )?,
             );
@@ -627,17 +647,23 @@ where
     })
 }
 
-pub(crate) fn read_entry_bytes_from_file<P>(pipe_log: &P, idx: &EntryIndex) -> Result<Vec<u8>>
+pub(crate) fn read_entry_bytes_from_file<P>(
+    instance_id: u64,
+    pipe_log: &P,
+    idx: &EntryIndex,
+) -> Result<Vec<u8>>
 where
     P: PipeLog,
 {
     BLOCK_CACHE.with(|cache| {
-        if cache.key.get() != idx.entries.unwrap() {
+        let entries = idx.entries.unwrap();
+        if cache.key.get() != (instance_id, entries) {
             cache.insert(
-                idx.entries.unwrap(),
+                instance_id,
+                entries,
                 LogBatch::decode_entries_block(
-                    &pipe_log.read_bytes(idx.entries.unwrap())?,
-                    idx.entries.unwrap(),
+                    &pipe_log.read_bytes(entries)?,
+                    entries,
                     idx.compression_type,
                 )?,
             );
@@ -651,6 +677,13 @@ where
 #[cfg(test)]
 #[cfg(not(feature = "prost"))]
 pub(crate) mod tests {
+    use std::collections::{BTreeSet, HashSet};
+    use std::fs::OpenOptions;
+    use std::path::PathBuf;
+
+    use kvproto::raft_serverpb::RaftLocalState;
+    use raft::eraftpb::Entry;
+
     use super::*;
     use crate::env::{ObfuscatedFileSystem, Permission};
     use crate::file_pipe_log::{parse_reserved_file_name, FileNameExt};
@@ -658,11 +691,6 @@ pub(crate) mod tests {
     use crate::pipe_log::Version;
     use crate::test_util::{generate_entries, PanicGuard};
     use crate::util::ReadableSize;
-    use kvproto::raft_serverpb::RaftLocalState;
-    use raft::eraftpb::Entry;
-    use std::collections::{BTreeSet, HashSet};
-    use std::fs::OpenOptions;
-    use std::path::PathBuf;
 
     pub(crate) type RaftLogEngine<F = DefaultFileSystem> = Engine<F>;
     impl<F: FileSystem> RaftLogEngine<F> {
@@ -1697,7 +1725,7 @@ pub(crate) mod tests {
         }
 
         drop(engine);
-        //dump dir with raft groups. 8 element in raft groups 7 and 2 elements in raft
+        // dump dir with raft groups. 8 element in raft groups 7 and 2 elements in raft
         // groups 8
         let dump_it = Engine::dump_with_file_system(dir.path(), fs.clone()).unwrap();
         let total = dump_it
@@ -1707,7 +1735,7 @@ pub(crate) mod tests {
             .count();
         assert!(total == 10);
 
-        //dump file
+        // dump file
         let file_id = FileId {
             queue: LogQueue::Rewrite,
             seq: 1,
@@ -1724,10 +1752,10 @@ pub(crate) mod tests {
             .count();
         assert!(0 == total);
 
-        //dump dir that does not exists
+        // dump dir that does not exists
         assert!(Engine::dump_with_file_system(Path::new("/not_exists_dir"), fs.clone()).is_err());
 
-        //dump file that does not exists
+        // dump file that does not exists
         let mut not_exists_file = PathBuf::from(dir.as_ref());
         not_exists_file.push("not_exists_file");
         assert!(Engine::dump_with_file_system(not_exists_file.as_path(), fs).is_err());
@@ -1760,7 +1788,7 @@ pub(crate) mod tests {
         let script1 = "".to_owned();
         RaftLogEngine::unsafe_repair_with_file_system(
             dir.path(),
-            None, /* queue */
+            None, // queue
             script1,
             fs.clone(),
         )
@@ -1779,7 +1807,7 @@ pub(crate) mod tests {
         .to_owned();
         RaftLogEngine::unsafe_repair_with_file_system(
             dir.path(),
-            None, /* queue */
+            None, // queue
             script2,
             fs.clone(),
         )
@@ -1841,7 +1869,7 @@ pub(crate) mod tests {
         .to_owned();
         RaftLogEngine::unsafe_repair_with_file_system(
             dir.path(),
-            None, /* queue */
+            None, // queue
             script,
             fs.clone(),
         )

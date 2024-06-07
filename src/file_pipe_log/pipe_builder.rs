@@ -315,6 +315,11 @@ impl<F: FileSystem> DualPipesBuilder<F> {
             // Avoid creating a thread pool.
             return Ok((machine_factory.new_target(), machine_factory.new_target()));
         }
+        info!(
+            "recover file pipe log, found {} append files, {} rewrite files",
+            self.append_files.len(),
+            self.rewrite_files.len()
+        );
         let threads = std::cmp::min(
             self.cfg.recovery_threads,
             self.append_files.len() + self.rewrite_files.len(),

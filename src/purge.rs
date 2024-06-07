@@ -44,6 +44,7 @@ where
     P: PipeLog,
 {
     cfg: Arc<Config>,
+    instance_id: u64,
     memtables: MemTables,
     pipe_log: Arc<P>,
     global_stats: Arc<GlobalStats>,
@@ -62,6 +63,7 @@ where
 {
     pub fn new(
         cfg: Arc<Config>,
+        instance_id: u64,
         memtables: MemTables,
         pipe_log: Arc<P>,
         global_stats: Arc<GlobalStats>,
@@ -69,6 +71,7 @@ where
     ) -> PurgeManager<P> {
         PurgeManager {
             cfg,
+            instance_id,
             memtables,
             pipe_log,
             global_stats,
@@ -363,7 +366,8 @@ where
             // compression overhead is not too high.
             let mut entry_indexes = entry_indexes.into_iter().peekable();
             while let Some(ei) = entry_indexes.next() {
-                let entry = read_entry_bytes_from_file(self.pipe_log.as_ref(), &ei)?;
+                let entry =
+                    read_entry_bytes_from_file(self.instance_id, self.pipe_log.as_ref(), &ei)?;
                 current_size += entry.len();
                 current_entries.push(entry);
                 current_entry_indexes.push(ei);
